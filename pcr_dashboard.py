@@ -1,7 +1,11 @@
 import requests
+from bs4 import BeautifulSoup
 import streamlit as st
 
-# Enhanced headers to simulate a proper browser request
+# URL for Nifty option chain data
+url = 'https://www.nseindia.com/live_market/dynaContent/live_analysis/option_chain/optionKeys.jsp?symbol=NIFTY'
+
+# Enhanced headers to simulate a real browser request
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     'Accept-Language': 'en-US,en;q=0.9',
@@ -11,62 +15,54 @@ headers = {
     'Content-Type': 'application/json'
 }
 
-@st.cache_data(ttl=300)
+# Function to fetch and parse the data
 def fetch_pcr():
-    url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-    session = requests.Session()
-    session.headers.update(headers)
-
-    # Get data from the API
     try:
-        session.get("https://www.nseindia.com")  # Initiating the session
+        # Initiating a session to simulate a real browser
+        session = requests.Session()
+        session.headers.update(headers)
+
+        # Make an initial request to get the cookies
+        session.get("https://www.nseindia.com")  # This should set the session cookies
+
+        # Send the request to fetch data
         response = session.get(url)
 
-        # Check if response is empty or invalid
+        # Check if the request was successful
         if response.status_code != 200:
             st.error(f"Failed to fetch data, status code: {response.status_code}")
             return None, None, None
 
-        # Try to parse JSON data
-        try:
-            data = response.json()
-        except requests.exceptions.JSONDecodeError:
-            st.error("Error decoding the response. It might not be in JSON format.")
-            return None, None, None
+        # Parse the HTML content using BeautifulSoup
+        soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Process the data
+        # Find the table containing the data
+        table = soup.find('table', {'id': 'octable'})
+
         total_put_oi = 0
         total_call_oi = 0
-        for item in data["records"]["data"]:
-            if 'PE' in item and 'CE' in item:
-                total_put_oi += item['PE']['openInterest']
-                total_call_oi += item['CE']['openInterest']
+
+        # Extract Open Interest (OI) data for Put and Call options
+        for row in table.find_all('tr')[2:]:  # Skip the header rows
+            cols = row.find_all('td')
+            if len(cols) > 10:
+                try:
+                    put_oi = int(cols[8].text.strip().replace(',', ''))  # PUT OI
+                    call_oi = int(cols[9].text.strip().replace(',', ''))  # CALL OI
+
+                    total_put_oi += put_oi
+                    total_call_oi += call_oi
+                except ValueError:
+                    continue  # Skip rows with invalid data
 
         if total_call_oi == 0:
             st.warning("No data available for Call Open Interest.")
             return None, None, None
 
+        # Calculate PCR (Put-Call Ratio)
         pcr = total_put_oi / total_call_oi
         return round(pcr, 2), total_put_oi, total_call_oi
 
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
         return None, None, None
-
-# Streamlit dashboard
-st.title("📊 Live Put-Call Ratio (PCR) Dashboard")
-st.caption("Based on NIFTY Options from NSE")
-
-pcr_value, put_oi, call_oi = fetch_pcr()
-
-if pcr_value is not None:
-    st.metric("PCR", pcr_value)
-    st.metric("Total PUT OI", f"{put_oi:,}")
-    st.metric("Total CALL OI", f"{call_oi:,}")
-
-    if pcr_value > 1:
-        st.success("📉 Bearish Bias (More Puts)")
-    elif pcr_value < 1:
-        st.info("📈 Bullish Bias (More Calls)")
-    else:
-        st.warning("🔁 Neutral Sentiment")
